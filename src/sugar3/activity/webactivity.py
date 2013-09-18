@@ -20,7 +20,7 @@ import os
 
 from gi.repository import Gdk
 from gi.repository import Gio
-from gi.repository import WebKit2
+from gi.repository import WebKit
 from gi.repository import Gtk
 from gi.repository import GdkX11
 assert GdkX11
@@ -46,11 +46,10 @@ class WebActivity(Gtk.Window):
         self.connect('realize', self._realize_cb)
         self.connect('destroy', self._destroy_cb)
 
-        context = WebKit2.WebContext.get_default()
-        context.register_uri_scheme("activity", self._app_scheme_cb, None)
-
-        self._web_view = WebKit2.WebView()
-        self._web_view.connect("load-changed", self._loading_changed_cb)
+        self._web_view = WebKit.WebView()
+        self._web_view.connect("notify::load-status", self._loading_changed_cb)
+        self._web_view.connect("resource-request-starting",
+                               self._resource_request_starting_cb)
 
         self.add(self._web_view)
         self._web_view.show()
@@ -58,8 +57,10 @@ class WebActivity(Gtk.Window):
         settings = self._web_view.get_settings()
         settings.set_property("enable-developer-extras", True)
 
-        self._web_view.load_uri("activity://%s/index.html" % self._bundle_id)
+        # FIXME this is a security hole
+        settings.set_property('enable-file-access-from-file-uris', True)
 
+        self._web_view.load_uri("activity://%s/index.html" % self._bundle_id)
         self.set_title(activity.get_bundle_name())
 
     def run_main_loop(self):
@@ -74,8 +75,20 @@ class WebActivity(Gtk.Window):
         self.destroy()
         Gtk.main_quit()
 
-    def _loading_changed_cb(self, web_view, load_event):
-        if load_event == WebKit2.LoadEvent.FINISHED:
+    def _resource_request_starting_cb(self, webview, web_frame, web_resource,
+                                      request, response):
+        uri = web_resource.get_uri()
+        if uri.startswith('activity://'):
+            prefix = "activity://%s" % self._bundle_id
+            new_prefix = "file://%s" % activity.get_bundle_path()
+            new_uri = new_prefix + uri[len(prefix):]
+
+            request.set_uri(new_uri)
+
+    def _loading_changed_cb(self, web_view, load_status):
+        status = web_view.get_load_status()
+
+        if status == WebKit.LoadStatus.FINISHED:
             key = os.environ["SUGAR_APISOCKET_KEY"]
             port = os.environ["SUGAR_APISOCKET_PORT"]
 
@@ -99,7 +112,7 @@ class WebActivity(Gtk.Window):
                          window.sugar.onEnvironmentSet();
                     """ % env_json
 
-            self._web_view.run_javascript(script, None, None, None)
+            self._web_view.execute_script(script)
 
     def _key_press_event_cb(self, window, event):
         key_name = Gdk.keyval_name(event.keyval)
